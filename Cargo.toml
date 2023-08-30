@@ -1,0 +1,32 @@
+[package]
+name = "cypher-v3-reimbursement"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anchor-lang = { git = "https://github.com/coral-xyz/anchor.git", version = "0.28.0" }
+anchor-spl = {  git = "https://github.com/coral-xyz/anchor.git", version = "0.28.0", features = [ "token", "associated_token", "dex", ] }
+
+cypher-client = { path = "../cypher-client-v3/cypher-client/", features = [ "mainnet-beta" ] }
+cypher-utils = { path = "../cypher-client-v3/cypher-utils/", features = [ "mainnet-beta" ] }
+lip-client = { path = "../cypher-client-v3/lip-client/", features = [ "mainnet-beta" ] }
+
+fixed = { version = ">=1.11.0, <1.12.0", features = ["serde"] }
+fixed-macro = "^1.1.1"
+
+pyth-sdk-solana = "0.8.0"
+
+serde = { version = "1.0.137", features = [ "derive" ] }
+serde_json = "1.0.81"
+
+solana-account-decoder = "~1.16.6"
+solana-clap-utils = "~1.16.6"
+solana-client = "~1.16.6"
+solana-sdk = "~1.16.6" 
+solana-transaction-status = "~1.16.6"
+
+switchboard-v2 = "0.4.0"
+
+tokio = "1.14.1"
