@@ -1334,7 +1334,8 @@ dependencies = [
 
 [[package]]
 name = "cypher-client"
-version = "3.0.8"
+version = "3.1.0"
+source = "git+https://github.com/chugach-foundation/cypher-client-v3.git#6627fac43548170d352631394caa299c27b1c267"
 dependencies = [
  "agnostic-orderbook",
  "anchor-gen",
@@ -1351,7 +1352,8 @@ dependencies = [
 
 [[package]]
 name = "cypher-utils"
-version = "3.0.8"
+version = "3.1.0"
+source = "git+https://github.com/chugach-foundation/cypher-client-v3.git#6627fac43548170d352631394caa299c27b1c267"
 dependencies = [
  "agnostic-orderbook",
  "anchor-lang 0.28.0 (git+https://github.com/coral-xyz/anchor.git)",
@@ -2455,6 +2457,7 @@ checksum = "57bcfdad1b858c2db7c38303a6d2ad4dfaf5eb53dfeb0910128b2c26d6158503"
 [[package]]
 name = "lip-client"
 version = "1.0.0"
+source = "git+https://github.com/chugach-foundation/cypher-client-v3.git#6627fac43548170d352631394caa299c27b1c267"
 dependencies = [
  "anchor-gen",
  "anchor-lang 0.28.0 (git+https://github.com/coral-xyz/anchor.git)",

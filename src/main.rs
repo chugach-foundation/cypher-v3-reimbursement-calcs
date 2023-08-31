@@ -1,6 +1,8 @@
 use anchor_lang::{prelude::Pubkey, AccountDeserialize, Discriminator};
 use anchor_spl::token::TokenAccount;
 use cypher_client::{
+    constants::QUOTE_TOKEN_DECIMALS,
+    quote_mint,
     utils::{adjust_decimals, derive_account_address},
     CypherAccount, CypherSubAccount, OracleProducts,
 };
@@ -11,7 +13,7 @@ use cypher_utils::{
         get_program_accounts_without_data,
     },
 };
-use fixed::{traits::ToFixed, types::I80F48};
+use fixed::types::I80F48;
 use lip_client::{utils::derive_deposit_authority, Deposit};
 use pyth_sdk_solana::state::{load_price_account, load_product_account};
 use solana_client::{
@@ -190,10 +192,10 @@ async fn main() {
         });
     }
 
-    let cypher_accounts = get_all_cypher_accounts(&rpc_client).await.unwrap();
+    let mut cypher_accounts = get_all_cypher_accounts(&rpc_client).await.unwrap();
     println!("Fetched {} Accounts.", cypher_accounts.len());
 
-    let cypher_sub_accounts = get_all_cypher_sub_accounts(&rpc_client).await.unwrap();
+    let mut cypher_sub_accounts = get_all_cypher_sub_accounts(&rpc_client).await.unwrap();
     println!("Fetched {} Sub Accounts.", cypher_sub_accounts.len());
 
     let lip_deposits = get_all_lip_deposits(&rpc_client).await.unwrap();
@@ -201,7 +203,7 @@ async fn main() {
 
     let mut accounts_equity_info = Vec::new();
 
-    for account in cypher_accounts.iter() {
+    for account in cypher_accounts.iter_mut() {
         let sub_account_pubkeys = account
             .state
             .sub_account_caches
@@ -209,13 +211,13 @@ async fn main() {
             .filter(|sac| sac.sub_account != Pubkey::default())
             .map(|sac| sac.sub_account)
             .collect::<Vec<Pubkey>>();
-        let sub_accounts = cypher_sub_accounts
-            .iter()
+        let mut sub_accounts = cypher_sub_accounts
+            .iter_mut()
             .filter(|sa| sub_account_pubkeys.contains(&sa.address))
-            .collect::<Vec<&SubAccountContext>>();
+            .collect::<Vec<&mut SubAccountContext>>();
 
         let account_equity_info =
-            get_account_equity(&cypher_ctx, &cache_ctx, account, &sub_accounts).await;
+            get_account_equity(&cypher_ctx, &cache_ctx, account, &mut sub_accounts).await;
 
         // println!(
         //     "Account: {} - Equity: {:?}",
@@ -483,6 +485,7 @@ pub struct DerivativePosition {
     pub market: String,
     pub side: String,
     pub amount: f64,
+    pub usdc_in_bids: f64,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -497,11 +500,74 @@ pub struct SubAccountEquityInfo {
     pub derivative_positions: Vec<DerivativePosition>,
 }
 
+fn close_derivative_positions(cache_context: &CacheContext, sub_account: &mut SubAccountContext) {
+    let derivative_positions = sub_account.state.get_derivative_positions();
+    let sub_account_state = &mut sub_account.state;
+
+    for dp in derivative_positions.iter() {
+        let quote_mint_position_idx = sub_account_state.get_position_idx(&quote_mint::id(), true);
+        let quote_token_amount =
+            if let Some(pos_idx) = sub_account_state.get_position_idx(&dp.market, false) {
+                let derivative_position = sub_account_state.get_derivative_position_mut(pos_idx);
+                let cache = cache_context
+                    .state
+                    .get_price_cache(derivative_position.cache_index as usize);
+
+                let position_size = derivative_position.total_position();
+
+                match derivative_position.market_type {
+                    cypher_client::MarketType::PerpetualFuture => {
+                        let position_size_ui = adjust_decimals(position_size, cache.perp_decimals);
+
+                        // if positive is negative, we have to buy it back,
+                        // if the position is positive, we have to sell it
+                        // doesn't really matter how we perform this operation
+                        // because the sign of the position will dictate how the USDC balance changes
+
+                        let position_value_ui =
+                            position_size_ui.checked_mul(cache.oracle_price()).unwrap();
+                        // println!(
+                        //     "Closing - Position: {} - Amount: {} - Value: {}",
+                        //     dp.market, position_size_ui, position_value_ui
+                        // );
+                        let position_value_native = position_value_ui
+                            .checked_mul(I80F48::from(10u64.pow(QUOTE_TOKEN_DECIMALS.into())))
+                            .unwrap();
+                        // zero out the base position
+                        // we can not zero out the entire position because there might be USDC locked in bids
+                        derivative_position.base_position = I80F48::ZERO.to_bits();
+                        // force cancel all ask orders, they would reflect on account equity
+                        derivative_position.open_orders_cache.coin_total = 0;
+                        derivative_position.open_orders_cache.coin_free = 0;
+                        position_value_native
+                    }
+                    _ => I80F48::ZERO,
+                }
+            } else {
+                I80F48::ZERO
+            };
+
+        if let Some(pos_idx) = quote_mint_position_idx {
+            let spot_position = sub_account_state.get_spot_position_mut(pos_idx);
+            let new_position = spot_position.position() + quote_token_amount;
+            // println!(
+            //     "Crediting Quote - Amount: {} - Position: {} - New Position: {}",
+            //     quote_token_amount,
+            //     spot_position.position(),
+            //     new_position
+            // );
+            spot_position.position = new_position.to_bits();
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 async fn get_account_equity(
     cypher_context: &CypherContext,
     cache_context: &CacheContext,
-    account: &AccountContext,
-    sub_accounts: &[&SubAccountContext],
+    account: &mut AccountContext,
+    sub_accounts: &mut [&mut SubAccountContext],
 ) -> AccountEquityInfo {
     let pools = cypher_context.pools.read().await;
     let perp_markets = cypher_context.perp_markets.read().await;
@@ -514,7 +580,10 @@ async fn get_account_equity(
 
     let mut sub_account_equity_infos = Vec::new();
 
-    for sub_account in sub_accounts.iter() {
+    for sub_account in sub_accounts.iter_mut() {
+        // close the derivative positions first
+        close_derivative_positions(cache_context, sub_account);
+
         let (assets_value_weighted, assets_value_unweighted) = sub_account.state.get_assets_value(
             &cache_context.state,
             cypher_client::MarginCollateralRatioType::Initialization,
@@ -597,6 +666,11 @@ async fn get_account_equity(
                         market: dp.market.to_string(),
                         side,
                         amount: adjust_decimals(dp.total_position(), cache.perp_decimals).to_num(),
+                        usdc_in_bids: adjust_decimals(
+                            I80F48::from(dp.open_orders_cache.pc_total),
+                            QUOTE_TOKEN_DECIMALS.into(),
+                        )
+                        .to_num(),
                     }
                 })
                 .collect(),
